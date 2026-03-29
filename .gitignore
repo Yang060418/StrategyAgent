@@ -1,0 +1,12 @@
+# Environments and Secrets
+.env
+__pycache__/
+*.pyc
+
+# Project Specific Output and Data
+.cache/
+logs/
+exports/
+
+# Testing
+.pytest_cache/

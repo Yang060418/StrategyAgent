@@ -1,0 +1,26 @@
+# Core Frameworks
+dspy-ai>=2.4.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+google-generativeai>=0.4.0
+
+# Infrastructure & Utilities
+loguru>=0.7.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+pandas>=2.1.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+tenacity>=8.3.0
+
+# Data Specific
+arxiv>=2.1.0
+yfinance>=0.2.40
+pandas_ta>=0.3.14b0
+fredapi>=0.5.1
+edgartools>=2.14.0
+tavily-python>=0.3.3
+alpha_vantage>=2.3.1
+
+# Testing & Validation
+pytest>=8.0.0
