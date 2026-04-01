@@ -2,7 +2,7 @@ import dspy
 import re
 import string
 from typing import List, Optional, Dict, Any
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from strategy_ideation_engine.intelligence.signatures.ideation import (
     ResearchSummarizer, DataSynthesizer, ThesisArchitect, TradeArchitect, IndicatorCoder
@@ -10,10 +10,7 @@ from strategy_ideation_engine.intelligence.signatures.ideation import (
 from strategy_ideation_engine.schemas.hypothesis import (
     TradingHypothesis, StrategyType, StrategyArchetype, TradeLeg, LegType, RiskMetrics
 )
-from strategy_ideation_engine.schemas.market_data import MarketContext
-from strategy_ideation_engine.schemas.research import LiteratureContext
-from strategy_ideation_engine.schemas.event import MarketEvent
-from strategy_ideation_engine.schemas.state import StrategyScratchpad
+from strategy_ideation_engine.intelligence.utils import GroundingValidator
 from strategy_ideation_engine.config import logger, settings
 
 # Retry decorator for API Rate Limits
@@ -27,130 +24,110 @@ provider_retry = retry(
 
 class StrategyIdeationModule(dspy.Module):
     """
-    Stateful Four-Stage Brain for complex strategy formulation.
-    Upgraded with ASCII sanitization and Multi-Line Re-Stitching for formatting resilience.
+    Refactored Strategy Ideation Engine as a compilable DSPy Module.
+    Uses dspy.Assert and dspy.Suggest to enforce numerical grounding and prevent 'Density Hacking'.
     """
     def __init__(self, lm: Optional[dspy.LM] = None):
         super().__init__()
         self.lm = lm
-        self.summarizer = dspy.ChainOfThought(ResearchSummarizer)
-        self.synthesizer = dspy.ChainOfThought(DataSynthesizer)
-        self.thesis_architect = dspy.ChainOfThought(ThesisArchitect)
-        self.trade_architect = dspy.ChainOfThought(TradeArchitect)
-        self.indicator_coder = dspy.Predict(IndicatorCoder)
         
-        # Force sub-modules to use the provided LM
-        if self.lm:
-            self.summarizer.lm = self.lm
-            self.synthesizer.lm = self.lm
-            self.thesis_architect.lm = self.lm
-            self.trade_architect.lm = self.lm
-            self.indicator_coder.lm = self.lm
+        # Initialize Signatures as TypedPredictors for structured output validation
+        self.summarizer = dspy.TypedChainOfThought(ResearchSummarizer)
+        self.synthesizer = dspy.TypedChainOfThought(DataSynthesizer)
+        self.thesis_architect = dspy.TypedChainOfThought(ThesisArchitect)
+        self.trade_architect = dspy.TypedChainOfThought(TradeArchitect)
+        self.indicator_coder = dspy.TypedPredictor(IndicatorCoder)
 
     def _sanitize_string(self, text: str) -> str:
         """Strips non-ASCII characters and standardizes punctuation."""
         if not text: return ""
         printable = set(string.printable)
         text = ''.join(filter(lambda x: x in printable, text))
-        text = text.replace('鈥', '-').replace('鈥', '-').replace('鈥', "'").replace('鈥', "'")
         return text
 
     @provider_retry
-    def summarize_literature(self, literature: LiteratureContext) -> str:
+    def summarize_literature(self, literature) -> str:
+        """Scout Task: Condense raw research."""
+        # Convert list of Pydantic objects to a dense string for the LLM
+        insights_str = "\n".join([
+            f"TITLE: {i.title}\nFINDINGS: {'; '.join(i.key_findings)}" 
+            for i in literature.insights
+        ])
+        
         with dspy.settings.context(lm=self.lm or dspy.settings.lm):
-            raw_text = "\n".join([f"- {i.title}: {'; '.join(i.key_findings)}" for i in literature.insights])
-            summary_out = self.summarizer(
-                raw_insights=raw_text, 
-                query_topic=literature.query_topic,
-                config={"max_tokens": 1024}
+            prediction = self.summarizer(
+                raw_insights=insights_str, 
+                query_topic=literature.query_topic
             )
-            return self._sanitize_string(summary_out.summarized_findings)
+            return self._sanitize_string(prediction.summarized_findings)
 
     @provider_retry
-    def synthesize_facts(self, market_str: str, research_summary: str) -> Dict[str, str]:
+    def synthesize_facts(self, market_context_str: str, research_summary_str: str) -> Dict[str, str]:
+        """Scout Task: Extract numerical fact sheet."""
         with dspy.settings.context(lm=self.lm or dspy.settings.lm):
-            fact_out = self.synthesizer(
-                market_context=market_str, 
-                research_summary=research_summary,
-                config={"max_tokens": 2048}
+            prediction = self.synthesizer(
+                market_context=market_context_str, 
+                research_summary=research_summary_str
             )
-            return {
-                "fact_sheet": self._sanitize_string(fact_out.numerical_fact_sheet)
-            }
+            return {"fact_sheet": self._sanitize_string(prediction.numerical_fact_sheet)}
 
-    @provider_retry
-    def architect_thesis(self, event: MarketEvent, market_str: str, research_summary: str, fact_sheet: str, refinement_feedback: str = "") -> Dict[str, Any]:
+    def forward(self, event, market_context_str: str, research_summary: str, fact_sheet: str, refinement_feedback: str = "") -> TradingHypothesis:
+        """
+        The main optimization path. 
+        Chains the Economic Thesis generation with Technical Trade Architecture.
+        Includes DSPy Suggest for numerical grounding.
+        """
         with dspy.settings.context(lm=self.lm or dspy.settings.lm):
-            thesis_out = self.thesis_architect(
-                event=f"{event.source}: {event.raw_payload}",
-                market_context=market_str,
+            # 1. Architect the Economic Thesis
+            thesis_prediction = self.thesis_architect(
+                event=event,
+                market_context=market_context_str,
                 research_summary=research_summary,
                 fact_sheet=fact_sheet,
-                refinement_feedback=refinement_feedback,
-                config={"max_tokens": settings.DSPY_MAX_TOKENS} 
+                refinement_feedback=refinement_feedback
+            )
+            thesis = thesis_prediction.output
+
+            # --- NUMERICAL GROUNDING ASSERTION ---
+            # Prevents 'Density Hacking' by ensuring numbers exist in the Fact Sheet.
+            grounding_score = GroundingValidator.calculate_grounding_score(
+                fact_sheet, thesis.economic_rationale
             )
             
-            # Access structured output directly
-            out = thesis_out.output
-            
-            data = {
-                "strategy_name": out.strategy_name,
-                "strategy_archetype": out.strategy_archetype,
-                "strategy_type": out.strategy_type,
-                "horizon": str(out.horizon),
-                "economic_rationale": out.economic_rationale,
-                "catalysts": out.catalysts,
-                "risks": out.risks
-            }
-            return {k: self._sanitize_string(v) if isinstance(v, str) else v for k, v in data.items()}
-
-    @provider_retry
-    def architect_trade(self, thesis_data: Dict[str, Any], market_str: str, refinement_feedback: str = "None") -> TradingHypothesis:
-        with dspy.settings.context(lm=self.lm or dspy.settings.lm):
-            trade_out = self.trade_architect(
-                strategy_name=thesis_data["strategy_name"],
-                strategy_type=thesis_data["strategy_type"],
-                strategy_archetype=thesis_data.get("strategy_archetype", "TACTICAL"),
-                economic_rationale=thesis_data["economic_rationale"],
-                market_context=market_str,
-                refinement_feedback=refinement_feedback,
-                config={"max_tokens": 4096}
+            dspy.Suggest(
+                grounding_score >= 0.7,
+                f"Your rationale cited numbers that were not in the Fact Sheet or had poor grounding (Score: {grounding_score:.2f}). "
+                f"Rewrite the rationale using ONLY the EXACT verified metrics from the Fact Sheet: {fact_sheet}"
             )
-            return self._assemble_hypothesis(thesis_data, trade_out)
 
-    def _assemble_hypothesis(self, thesis_data: Dict[str, Any], trade: dspy.Prediction) -> TradingHypothesis:
-        """Assembles the structured output into a TradingHypothesis."""
-        out = trade.output
-        
-        # 1. Map legs directly from structured output
-        legs = []
-        for leg_out in out.legs:
-            legs.append(TradeLeg(
-                ticker=leg_out.ticker.upper(),
-                leg_type=leg_out.leg_type,
-                relative_weight=leg_out.relative_weight,
-                entry_condition=leg_out.entry_condition,
-                exit_condition=leg_out.exit_condition
-            ))
+            # 2. Architect the Technical Trade Structure (chained from Thesis)
+            trade_prediction = self.trade_architect(
+                strategy_name=thesis.strategy_name,
+                strategy_type=thesis.strategy_type,
+                strategy_archetype=thesis.strategy_archetype,
+                economic_rationale=thesis.economic_rationale,
+                market_context=market_context_str,
+                refinement_feedback=refinement_feedback
+            )
+            trade = trade_prediction.output
 
-        if not legs:
-            raise ValueError("CRITICAL: No legs provided in structured output.")
-
-        # 2. Rationale Quality Check
-        rationale = thesis_data.get("economic_rationale", "")
-        numbers_found = re.findall(r"\d+%?|\d+\.\d+%?", rationale)
-        if len(numbers_found) < 2:
-            logger.warning(f"Low numerical density ({len(numbers_found)}) in rationale.")
-
-        return TradingHypothesis(
-            strategy_name=thesis_data["strategy_name"],
-            strategy_archetype=thesis_data["strategy_archetype"],
-            strategy_type=thesis_data["strategy_type"],
-            economic_rationale=rationale,
-            catalysts=thesis_data.get("catalysts", []),
-            legs=legs,
-            time_horizon_days=out.time_horizon_days,
-            invalidation_criteria=out.invalidation_criteria,
-            risk_metrics=RiskMetrics(max_drawdown_tolerance=out.max_drawdown_pct),
-            adversarial_score=0.0
-        )
+            # 3. Assemble and Return the Pydantic-validated TradingHypothesis
+            return TradingHypothesis(
+                strategy_name=thesis.strategy_name,
+                strategy_type=thesis.strategy_type,
+                strategy_archetype=thesis.strategy_archetype,
+                economic_rationale=thesis.economic_rationale,
+                catalysts=thesis.catalysts,
+                legs=[
+                    TradeLeg(
+                        ticker=leg.ticker.upper(),
+                        leg_type=leg.leg_type,
+                        relative_weight=leg.relative_weight,
+                        entry_condition=leg.entry_condition,
+                        exit_condition=leg.exit_condition
+                    ) for leg in trade.legs
+                ],
+                time_horizon_days=trade.time_horizon_days,
+                invalidation_criteria=trade.invalidation_criteria,
+                risk_metrics=RiskMetrics(max_drawdown_tolerance=trade.max_drawdown_pct)
+            )

@@ -132,7 +132,7 @@ class TestIngestion(unittest.TestCase):
         json_str = json.dumps(cache_data)
         
         with patch('os.path.exists', return_value=True), \
-             patch('builtins.open', mock_open(read_data=json_str)) as mocked_file:
+             patch('builtins.open', mock_open(read_data=json_str)):
             
             # We also need to mock the WRITE because it will attempt to refresh the cache
             # The second call to open() will be for writing the new cache

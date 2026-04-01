@@ -1,4 +1,5 @@
 import dspy
+import os
 from typing import List, Optional, Dict, Any
 import uuid
 import re
@@ -19,7 +20,8 @@ from strategy_ideation_engine.schemas.hypothesis import (
 )
 from strategy_ideation_engine.schemas.state import StrategyScratchpad
 
-from strategy_ideation_engine.intelligence.utils import apply_mercy_rule, TokenBudgeter
+from strategy_ideation_engine.intelligence.utils import apply_mercy_rule, TokenBudgeter, setup_lm
+from dspy.primitives.assertions import assert_transform_module, backtrack_handler
 
 class StrategyEngine:
     """
@@ -34,17 +36,44 @@ class StrategyEngine:
         
         # Initialize Three-Tier Intelligence
         self._setup_tiered_brains()
+        
+        # 1. Initialize the base Strategist Module
         self.brain = StrategyIdeationModule(lm=self.strategist_lm)
+        
+        # 2. PHASE 5: Load Programmatic Optimizations (if they exist)
+        # Strategist
+        strat_optimized_path = os.path.join(settings.EXPORT_DIR, "optimized_strategist.json")
+        if os.path.exists(strat_optimized_path):
+            logger.info(f"PHASE 5: Loading Optimized Strategist from {strat_optimized_path}...")
+            try:
+                self.brain.load(strat_optimized_path)
+                logger.info("Strategist optimization load successful.")
+            except Exception as e:
+                logger.error(f"Failed to load optimized strategist: {e}.")
+        
+        # Scout
+        scout_optimized_path = os.path.join(settings.EXPORT_DIR, "optimized_scout.json")
         self.scout_brain = StrategyIdeationModule(lm=self.scout_lm)
+        if os.path.exists(scout_optimized_path):
+            logger.info(f"PHASE 5: Loading Optimized Scout from {scout_optimized_path}...")
+            try:
+                self.scout_brain.load(scout_optimized_path)
+                logger.info("Scout optimization load successful.")
+            except Exception as e:
+                logger.error(f"Failed to load optimized scout: {e}.")
+
+        # 3. Wrap the brain with assertion handling for runtime Suggestions
+        self.brain_with_assertions = assert_transform_module(self.brain, backtrack_handler)
+        
         self.gatekeeper = AdversarialFilterModule(lm=self.critic_lm)
         self.validator = TechnicalValidator()
 
     def _setup_tiered_brains(self):
         """Configure Scout, Strategist, and Critic backends with provider-aware routing."""
         try:
-            self.scout_lm = self._setup_lm(settings.SCOUT_MODEL)
-            self.strategist_lm = self._setup_lm(settings.STRATEGIST_MODEL)
-            self.critic_lm = self._setup_lm(settings.CRITIC_MODEL)
+            self.scout_lm = setup_lm(settings.SCOUT_MODEL)
+            self.strategist_lm = setup_lm(settings.STRATEGIST_MODEL)
+            self.critic_lm = setup_lm(settings.CRITIC_MODEL)
             
             # Configure global dspy settings
             dspy.settings.configure(lm=self.strategist_lm)
@@ -52,41 +81,6 @@ class StrategyEngine:
             logger.info(f"Three-Tier Engine Ready: Scout={settings.SCOUT_MODEL}, Strategist={settings.STRATEGIST_MODEL}, Critic={settings.CRITIC_MODEL}")
         except Exception as e:
             logger.error(f"Failed to configure Tiered Brains: {e}")
-
-    def _setup_lm(self, model_name: str) -> dspy.LM:
-        """Helper to initialize dspy.LM with the correct provider settings."""
-        api_key = settings.GROQ_API_KEY
-        base_url = "https://api.groq.com/openai/v1"
-        full_model_str = model_name
-
-        if "/" in model_name:
-            provider = model_name.split("/")[0].lower()
-            
-            # 1. ACTUAL OPENAI
-            if provider == "openai" and settings.OPENAI_API_KEY:
-                api_key = settings.OPENAI_API_KEY
-                base_url = None
-            
-            # 2. ANTHROPIC
-            elif provider == "anthropic":
-                api_key = settings.ANTHROPIC_API_KEY
-                base_url = None
-                
-            # 3. GROQ / OPENAI-Compatible providers
-            elif provider in ["llama", "groq", "meta-llama", "qwen"]:
-                api_key = settings.GROQ_API_KEY
-                base_url = "https://api.groq.com/openai/v1"
-        else:
-            # Default to Groq
-            api_key = settings.GROQ_API_KEY
-            base_url = "https://api.groq.com/openai/v1"
-
-        return dspy.LM(
-            model=full_model_str,
-            api_key=api_key,
-            base_url=base_url,
-            max_tokens=settings.DSPY_MAX_TOKENS
-        )
 
     def run_on_event(self, event: MarketEvent) -> Optional[TradingHypothesis]:
         """Executes the Tiered workflow."""
@@ -104,8 +98,10 @@ class StrategyEngine:
         literature = self.researcher.get_literature_review(query, tickers)
         
         # 3. Initialize Scratchpad with Dynamic Token Budgeting
-        # Strategist Budget: 12K TPM, 1.5K reserve = 10.5K available
-        budgeter = TokenBudgeter(settings.STRATEGIST_MODEL, tpm_limit=12000, reserve_tokens=1500)
+        # Dynamically fetch limits based on Strategist Model
+        strat_tpm = settings.get_tpm_limit(settings.STRATEGIST_MODEL)
+        # Increase reserve tokens to 4000 to account for DSPy signatures and demos
+        budgeter = TokenBudgeter(settings.STRATEGIST_MODEL, tpm_limit=strat_tpm, reserve_tokens=4000)
         
         # Priority 1: Macro & Fundamentals (High Density)
         macro_str = str(market_context.macro_data.model_dump(exclude={'last_updated'}))
@@ -113,6 +109,7 @@ class StrategyEngine:
                     for t, f in market_context.fundamentals.items()}
         fund_str = str(fund_data)
         
+        # Deduct from budget
         budgeter.available_budget -= budgeter.count_tokens(macro_str)
         budgeter.available_budget -= budgeter.count_tokens(fund_str)
         
@@ -132,13 +129,32 @@ class StrategyEngine:
 
         # --- TIER 1: SCOUT (Reading & Distillation) ---
         logger.info("Tier 1: Scout summarizing literature and synthesizing facts...")
-        # Scout Budget: 6K TPM, 1.5K reserve = 4.5K available
-        scout_budgeter = TokenBudgeter(settings.SCOUT_MODEL, tpm_limit=6000, reserve_tokens=1500)
+        # Dynamically fetch limits based on Scout Model
+        scout_tpm = settings.get_tpm_limit(settings.SCOUT_MODEL)
+        scout_budgeter = TokenBudgeter(settings.SCOUT_MODEL, tpm_limit=scout_tpm, reserve_tokens=1500)
         literature.insights = scout_budgeter.budget_list(literature.insights, "Literature Insights")
         
         scratchpad.research_summary_str = self.scout_brain.summarize_literature(literature)
         facts = self.scout_brain.synthesize_facts(scratchpad.market_context_str, scratchpad.research_summary_str)
         scratchpad.fact_sheet = facts["fact_sheet"]
+        
+        logger.info(f"DEBUG: research_summary_tokens={budgeter.count_tokens(scratchpad.research_summary_str)}, fact_sheet_tokens={budgeter.count_tokens(scratchpad.fact_sheet)}")
+        
+        # Final Budgeting for Strategist: Ensure research and facts don't overflow the remaining budget
+        # We allow them to take up the remaining budget, but truncate if needed.
+        if budgeter.available_budget > 0:
+            res_summary_tokens = budgeter.count_tokens(scratchpad.research_summary_str)
+            if res_summary_tokens > budgeter.available_budget * 0.4: # Allocate 40% of remaining to research
+                allowed = int(len(scratchpad.research_summary_str) * (budgeter.available_budget * 0.4 / res_summary_tokens))
+                scratchpad.research_summary_str = scratchpad.research_summary_str[:allowed] + "... [Truncated]"
+                budgeter.available_budget -= budgeter.count_tokens(scratchpad.research_summary_str)
+            else:
+                budgeter.available_budget -= res_summary_tokens
+
+            fact_sheet_tokens = budgeter.count_tokens(scratchpad.fact_sheet)
+            if fact_sheet_tokens > budgeter.available_budget:
+                allowed = int(len(scratchpad.fact_sheet) * (budgeter.available_budget / fact_sheet_tokens))
+                scratchpad.fact_sheet = scratchpad.fact_sheet[:allowed] + "... [Truncated]"
         
         # --- TIER 2 & 3: STRATEGIST vs CRITIC DEBATE ---
         final_hypothesis = None
@@ -149,37 +165,28 @@ class StrategyEngine:
         previous_hypo_json = "None"
         previous_feedback = "None"
         full_critique_history = []
+
+        # Convert Pydantic event to a descriptive string for the Strategist
+        event_str = f"SOURCE: {event.source.value}\nPAYLOAD: {event.raw_payload}"
         
         for attempt in range(3):
             if attempt > 0:
-                logger.info(f"Rate Limit Mitigation: Sleeping for 15s before attempt {attempt+1}...")
-                time.sleep(15)
+                logger.info(f"Rate Limit Mitigation: Sleeping for 45s before attempt {attempt+1}...")
+                time.sleep(45)
 
-            logger.info(f"Strategist Architecting Thesis (Attempt {attempt+1})...")
+            logger.info(f"Strategist Architecting Thesis and Trade (Attempt {attempt+1})...")
             with dspy.settings.context(lm=self.strategist_lm):
                 try:
-                    thesis_data = self.brain.architect_thesis(
-                        event=event,
-                        market_str=scratchpad.market_context_str,
+                    # Use the unified forward() method with self-correction logic
+                    temp_hypo = self.brain_with_assertions(
+                        event=event_str,
+                        market_context_str=scratchpad.market_context_str,
                         research_summary=scratchpad.research_summary_str,
                         fact_sheet=scratchpad.fact_sheet,
                         refinement_feedback=refinement_feedback
                     )
                 except Exception as e:
-                    logger.error(f"Strategist failed: {e}")
-                    continue
-
-            # Architect Trade Structure WITHIN the loop to allow backtest feedback
-            logger.info(f"Strategist Architecting Trade Structure (Attempt {attempt+1})...")
-            with dspy.settings.context(lm=self.strategist_lm):
-                try:
-                    temp_hypo = self.brain.architect_trade(
-                        thesis_data, 
-                        scratchpad.market_context_str, 
-                        refinement_feedback=refinement_feedback
-                    )
-                except Exception as e:
-                    logger.error(f"Trade Architecture failed: {e}")
+                    logger.error(f"Strategist Pipeline failed: {e}")
                     continue
 
             # Phase 5b: Reality Check (Backtest) WITHIN the loop
@@ -238,8 +245,13 @@ class StrategyEngine:
         hypothesis.adversarial_feedback = "\n".join(scratchpad.critique_history)
         hypothesis.hypothesis_id = str(uuid.uuid4())
         
-        # 8. Persist and Export
-        self.ledger.save(hypothesis, event.event_id)
+        # 8. Persist and Export with inputs for future compilation
+        inputs_for_trace = {
+            "market_context_str": scratchpad.market_context_str,
+            "research_summary": scratchpad.research_summary_str,
+            "fact_sheet": scratchpad.fact_sheet
+        }
+        self.ledger.save(hypothesis, event.event_id, inputs=inputs_for_trace)
         self.exporter.export(hypothesis)
         
         return hypothesis

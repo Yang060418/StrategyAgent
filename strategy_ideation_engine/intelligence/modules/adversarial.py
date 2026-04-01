@@ -79,4 +79,6 @@ class AdversarialFilterModule(dspy.Module):
             f"FIXES:\n{self._to_bullet_string(out.fixes)}"
         )
         
+        logger.info(f"Adversarial Feedback for '{hypothesis.strategy_name}':\n{feedback}")
+        
         return float(final_score), feedback

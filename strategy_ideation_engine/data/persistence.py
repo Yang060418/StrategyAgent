@@ -15,11 +15,15 @@ class HypothesisLedger:
         self.storage_path = Path(storage_path or settings.EXPORT_DIR) / "hypothesis_ledger.jsonl"
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def save(self, hypothesis: TradingHypothesis, event_id: str):
-        """Saves a hypothesis with its triggering event metadata."""
+    def save(self, hypothesis: TradingHypothesis, event_id: str, inputs: Optional[dict] = None):
+        """
+        Saves a hypothesis with its triggering event metadata and optional inputs
+        for DSPy compilation/training.
+        """
         record = {
             "saved_at": datetime.utcnow().isoformat(),
             "trigger_event_id": event_id,
+            "inputs": inputs or {},
             "hypothesis": hypothesis.model_dump()
         }
         

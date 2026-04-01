@@ -28,6 +28,7 @@ class DataSynthesizer(dspy.Signature):
     1. NEGATIVE EARNINGS: If a ticker has negative trailing_eps, explicitly flag P/E as 'INVALID (Negative EPS)' and prioritize 'EV/EBITDA' or 'Price/Book' in your summary.
     2. CLEAN NUMBERS: Provide exact values from the context. No rounding.
     3. NO PROSE: Only bulleted numerical facts.
+    4. DENSITY: Focus only on the 5-7 most critical alpha-generating metrics per ticker. Exclude auxiliary data.
     """
     market_context = dspy.InputField(desc="Macro, fundamental, technical, and SEC data.")
     research_summary = dspy.InputField(desc="Condensed insights from ArXiv and news.")
@@ -51,7 +52,7 @@ class ThesisArchitect(dspy.Signature):
     CRITICAL RULES:
     1. NUMERICAL INTERPRETATION: Growth metrics are ratios. E.g., '0.73' means 73% growth.
     2. NO NESTING: Every field in your JSON output must be a simple string, integer, or list of strings. Do NOT use objects/dictionaries for rationale or risks.
-    3. NUMERICAL MANDATE: Every economic claim MUST be supported by at least TWO specific metrics from the provided Fact Sheet.
+    3. NUMERICAL MANDATE: Every economic claim MUST be supported by at least TWO specific metrics from the provided Fact Sheet. Use EXACT numerical values (no rounding) to ensure they are verified.
     4. QUALITY FILTER: If the fact sheet shows conflicting data, explain the discrepancy as part of the risk.
     """
 

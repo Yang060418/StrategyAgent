@@ -28,27 +28,29 @@ class TestProviders(unittest.TestCase):
             def __init__(self, val): self.val = val
             @property
             def iloc(self): return [self.val]
-            def pct_change(self, periods=12): return self
-            def __mul__(self, other): return self
+            def pct_change(self, **kwargs): return self
+            def __mul__(self, *args): return self
             def __getitem__(self, idx): return self.val
 
-        with patch.object(provider, 'fred') as mock_fred:
-            mock_fred.get_series.side_effect = [
-                MockSeries(5.33), # FEDFUNDS
-                MockSeries(0.03), # CPI (pct_change)
-                MockSeries(3.9)   # UNRATE
-            ]
-            
-            # First call - should fetch from mock
-            snap1 = provider.get_macro_snapshot()
-            self.assertEqual(snap1.fed_funds_rate, 5.33)
-            self.assertTrue(os.path.exists(self.macro_cache_file))
-            
-            # Second call - should use cache (mock_fred shouldn't be called again)
-            mock_fred.get_series.reset_mock()
-            snap2 = provider.get_macro_snapshot()
-            self.assertEqual(snap2.fed_funds_rate, 5.33)
-            mock_fred.get_series.assert_not_called()
+        mock_fred = MagicMock()
+        provider._fred = mock_fred
+        
+        mock_fred.get_series.side_effect = [
+            MockSeries(5.33), # FEDFUNDS
+            MockSeries(0.03), # CPI (pct_change)
+            MockSeries(3.9)   # UNRATE
+        ]
+        
+        # First call - should fetch from mock
+        snap1 = provider.get_macro_snapshot()
+        self.assertEqual(snap1.fed_funds_rate, 5.33)
+        self.assertTrue(os.path.exists(self.macro_cache_file))
+        
+        # Second call - should use cache (mock_fred shouldn't be called again)
+        mock_fred.get_series.reset_mock()
+        snap2 = provider.get_macro_snapshot()
+        self.assertEqual(snap2.fed_funds_rate, 5.33)
+        mock_fred.get_series.assert_not_called()
 
     def test_fundamental_provider_caching(self):
         provider = FundamentalProvider()

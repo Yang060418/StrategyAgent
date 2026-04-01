@@ -37,9 +37,9 @@ This document tracks the current drawbacks, technical debt, and planned improvem
 *   **Impact:** Correctly identifies Alpha vs. Sector-specific Beta.
 
 ### 7. Zero-Shot Prompt Dependency (Lack of DSPy Optimization)
-*   **Status:** Architectural Debt
-*   **Description:** The engine currently relies on static "Zero-Shot" prompts defined in the signatures. It does not use DSPy's `Teleprompter` or `Compiler` to optimize prompts based on historical successes.
-*   **Impact:** The system does not "learn" which reasoning patterns lead to higher backtest scores or lower Critic rejection rates over time.
+*   **Status:** Resolved (March 2026)
+*   **Description:** Refactored `StrategyIdeationModule` into a unified `dspy.Module`. Implemented `EngineCompiler` to bootstrap and optimize prompts using 'Gold Standard' examples from the `HypothesisLedger`.
+*   **Impact:** The system now programmatically learns from historical successes, moving beyond static prompts.
 
 ---
 
@@ -51,9 +51,10 @@ This document tracks the current drawbacks, technical debt, and planned improvem
 - [x] **Indicator Registry Expansion:** Integrated `pandas_ta` allowing access to 130+ indicators. (Completed March 2026)
 
 ### Phase 5: Programmatic Optimization & Learning (DSPy "Compilation")
-- [ ] **Establish "Gold Standard" Dataset:** Build a training set of 50+ "Perfect" strategy-event pairs that passed both the Critic and Backtest with high scores.
-- [ ] **Implement DSPy MIPRO/BootstrapFewShot:** Use a teleprompter to optimize the `Strategist` and `Critic` prompts based on the Gold Standard dataset.
-- [ ] **Automated Prompt Versioning:** Track how prompt optimizations affect "Alpha" generation across different market regimes.
+- [x] **Refactor to dspy.Module:** Unified the Strategist and Architect into a single compilable execution path. (Completed March 2026)
+- [x] **Numerical Grounding (Anti-Hallucination):** Implemented `GroundingValidator` and `dspy.Suggest` to ensure all rationales are factually anchored to the Fact Sheet. (Completed March 2026)
+- [ ] **Establish "Gold Standard" Dataset:** Build a training set of 50+ "Perfect" strategy-event pairs. (Captured via enhanced `HypothesisLedger` tracing)
+- [ ] **Implement DSPy MIPRO/BootstrapFewShot:** Fully automate the instruction and few-shot optimization using the `EngineCompiler`.
 
 ### Phase 6: Reliability & Model Orchestration
 - [x] **Dynamic Context Scaling:** Implemented `TokenBudgeter` to scale context (SEC/News) based on model limits. (Completed March 2026)

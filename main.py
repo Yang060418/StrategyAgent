@@ -3,7 +3,6 @@ import sys
 import uuid
 import time
 from datetime import datetime, timezone
-from pprint import pprint
 
 from strategy_ideation_engine.engine import StrategyEngine
 from strategy_ideation_engine.schemas.event import MarketEvent, EventSource
